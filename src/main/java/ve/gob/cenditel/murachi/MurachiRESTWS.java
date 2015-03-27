@@ -20,6 +20,7 @@ import java.security.Security;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
@@ -33,14 +34,9 @@ import java.text.SimpleDateFormat;
 
 
 
-
-
-
-
 import javax.ws.rs.Consumes;
 import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
-import javax.ws.rs.OPTIONS;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
@@ -75,13 +71,16 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
+import org.digidoc4j.Container;
+import org.digidoc4j.SignedInfo;
+
 
 
 @Path("/archivos")
 public class MurachiRESTWS {
 
 	private static final String SERVER_UPLOAD_LOCATION_FOLDER = "/tmp/"; 
-	
+        	
 	/**
 	 * Carga un archivo pasado a través de un formulario y retorna 
 	 * un json con el id del archivo en el servidor para futuras consultas
@@ -519,6 +518,63 @@ public class MurachiRESTWS {
 		return Response.status(200).entity(result).build();
 	}
 	
+	/**
+	 * Ejecuta el proceso de presign o preparacion de firma de documento en formato BDOC
+	 * 
+	 * @param presignPar
+	 * @param req
+	 * @return
+	 */
+	@POST
+	@Path("/bdoc/")
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	public PresignHash presignBdoc(PresignParameters presignPar, @Context HttpServletRequest req) {
+		
+		System.out.println("presignBdoc: ");
+		
+		
+		String fileId;
+		String certHex;
+		
+		CertificateFactory cf;
+		X509Certificate signerCert;
+		
+		
+		SignedInfo signedInfo;
+		
+		fileId = presignPar.getFileId();
+		String sourceFile = SERVER_UPLOAD_LOCATION_FOLDER + fileId;
+		
+		certHex = presignPar.getCertificate();
+		System.out.println("certificado en Hex: " + certHex);
+		
+		try {
+			Container container;
+			
+			container = Container.create(Container.DocumentType.BDOC);
+			container.addDataFile(sourceFile, "text/plain");
+			
+			cf = CertificateFactory.getInstance("X.509");
+		
+			InputStream in = new ByteArrayInputStream(hexStringToByteArray(certHex));
+			
+			signerCert = (X509Certificate) cf.generateCertificate(in);
+			
+			signedInfo = container.prepareSigning(signerCert);
+			
+			System.out.println("presignBdoc - hash: " + byteArrayToHexString(signedInfo.getDigest()));
+			
+			
+		} catch (CertificateException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		
+		
+		return null;
+		
+	}
 	
 	
 	

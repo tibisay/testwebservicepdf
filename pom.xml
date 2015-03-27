@@ -106,6 +106,20 @@
        		<version>2.1.2</version>
       	</dependency>
 		
+		
+		<dependency>
+      		<groupId>org.digidoc4j</groupId>
+      		<artifactId>digidoc4j</artifactId>
+      		<version>0.2.9.LOCAL_BUILD</version>
+ 		</dependency>
+		
+		<dependency>
+            <groupId>org.slf4j</groupId>
+			<artifactId>jcl-over-slf4j</artifactId>
+            <version>1.7.7</version>
+		</dependency>
+		
+		
 	</dependencies>
   
 </project>
