@@ -4,10 +4,13 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -25,9 +28,21 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Map.Entry;
 import java.util.UUID;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -47,8 +62,10 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.tsp.TimeStampToken;
 import org.glassfish.jersey.media.multipart.FormDataContentDisposition;
 import org.glassfish.jersey.media.multipart.FormDataParam;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import com.itextpdf.text.DocumentException;
@@ -62,17 +79,25 @@ import com.itextpdf.text.pdf.PdfSignature;
 import com.itextpdf.text.pdf.PdfSignatureAppearance;
 import com.itextpdf.text.pdf.PdfStamper;
 import com.itextpdf.text.pdf.PdfString;
+import com.itextpdf.text.pdf.security.CertificateInfo;
 import com.itextpdf.text.pdf.security.DigestAlgorithms;
 import com.itextpdf.text.pdf.security.ExternalDigest;
 import com.itextpdf.text.pdf.security.PdfPKCS7;
 import com.itextpdf.text.pdf.security.MakeSignature.CryptoStandard;
+import com.itextpdf.text.pdf.security.SignaturePermissions;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
+import org.digidoc4j.Configuration;
 import org.digidoc4j.Container;
+import org.digidoc4j.SignatureParameters;
+import org.digidoc4j.SignatureProductionPlace;
 import org.digidoc4j.SignedInfo;
+import org.digidoc4j.ValidationResult;
+import org.digidoc4j.Container.SignatureProfile;
+import org.digidoc4j.signers.PKCS12Signer;
 
 
 
@@ -90,7 +115,7 @@ public class MurachiRESTWS {
 	 * @return
 	 */
 	@POST
-	@Path("/cargar")
+	@Path("/")
 	@Consumes(MediaType.MULTIPART_FORM_DATA)
 	@Produces(MediaType.APPLICATION_JSON)
 	public Response uploadFile(
@@ -157,6 +182,211 @@ public class MurachiRESTWS {
 			e.printStackTrace();
 		}
 	}
+	
+	
+	/**
+	 * Verifica si un archivo posee firmas electronicas y retorna informacion
+	 * de las mismas en un json
+	 * @param idFile identificador del archivo a verificar
+	 * @return
+	 */
+	@GET
+	@Path("/{idFile}")
+	@Produces("application/json")
+	public Response verifyAFile(@PathParam("idFile") String idFile) {
+		
+		System.out.println("/{idFile}");
+		
+		String result = "";
+		String file = SERVER_UPLOAD_LOCATION_FOLDER + idFile;
+		
+		File tmpFile = new File(file);
+		
+		JSONObject jsonObject = new JSONObject();
+		
+		if (!tmpFile.exists()) {
+			System.out.println("File : " + file + " does not exists.");
+			jsonObject.put("fileExist", "false");
+			
+		}else{
+			System.out.println("File : " + file + " exists.");
+			jsonObject.put("fileExist", "true");
+			
+			String mime = getMimeType(file);
+			System.out.println("mimetype : " + mime);
+			
+			if (mime.equals("application/pdf")){
+				System.out.println(" PDF ");
+				
+				jsonObject = verifySignaturesInPdf(file);
+				
+			}else{
+				System.out.println("BDOC");
+				jsonObject.put("formato", "BDOC");
+				jsonObject.put("resultado", "NO IMPLEMENTADO");
+			}			
+		}
+		result = jsonObject.toString();
+		return Response.status(200).entity(result).build();
+	}
+	
+	/**
+	 * Retorna un JSON con informacion de las firmas del documento PDF
+	 * @param tmpFile archivo pdf a verificar
+	 * @return JSON con informacion de las firmas del documento PDF
+	 */
+	private JSONObject verifySignaturesInPdf(String pdfFile) {
+		
+		JSONObject jsonSignatures = new JSONObject();
+		JSONArray jsonArray = new JSONArray();
+		
+		try {
+			
+			Security.addProvider(new BouncyCastleProvider());
+			
+			PdfReader reader = new PdfReader(pdfFile);
+			AcroFields af = reader.getAcroFields();
+			ArrayList<String> names = af.getSignatureNames();
+			if (names.size() <= 0) {
+				jsonSignatures.put("signatureNumber", "0");
+			}else{
+				
+				jsonSignatures.put("fileExist", "true");
+				jsonSignatures.put("numberOfSignatures", names.size());
+								
+				HashMap<String, String> signatureInformation;
+				
+				for (String name : names) {
+					System.out.println("===== " + name + " =====");
+					signatureInformation = verifySignature(af, name);
+					System.out.println("signatureInformation.size " + signatureInformation.size());
+					
+					JSONObject jo = getJSONFromASignature(signatureInformation);
+					System.out.println("jo:  " + jo.toString());
+					jsonArray.put(jo);
+				}	
+				jsonSignatures.put("signatures", jsonArray);
+				System.out.println("jsonSignatures :  " + jsonSignatures.toString());
+				
+			}
+			
+		} catch (IOException e) {		
+			e.printStackTrace();
+		} catch (GeneralSecurityException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+				
+		return jsonSignatures;		
+	}
+	
+	/**
+	 * Chequea la integridad de una revision basada en una firma electronica
+	 * @param fields Campos
+	 * @param name nombre de la firma
+	 * @return 
+	 */
+	public HashMap<String, String> verifySignature(AcroFields fields, String name) throws GeneralSecurityException, IOException {
+				
+		HashMap<String, String> integrityMap = new HashMap<String, String>();
+		
+		System.out.println("Signature covers whole document: " + fields.signatureCoversWholeDocument(name));
+		
+		integrityMap.put("signatureCoversWholeDocument", Boolean.toString(fields.signatureCoversWholeDocument(name)));
+		
+		System.out.println("Document revision: " + fields.getRevision(name) + " of " + fields.getTotalRevisions());
+		integrityMap.put("documentRevision", Integer.toString(fields.getRevision(name)) + " of " + Integer.toString(fields.getTotalRevisions()));
+		
+		
+		PdfPKCS7 pkcs7 = fields.verifySignature(name);
+        System.out.println("Integrity check OK? " + pkcs7.verify());
+        integrityMap.put("integrityCheck", Boolean.toString(pkcs7.verify()));
+	
+        System.out.println("Digest Algorithm: " + pkcs7.getHashAlgorithm());
+        integrityMap.put("digestAlgorithm", pkcs7.getHashAlgorithm());
+        
+        System.out.println("Encryption Algorithm: " + pkcs7.getEncryptionAlgorithm());
+        integrityMap.put("encryptionAlgorithm", pkcs7.getEncryptionAlgorithm());
+        
+        System.out.println("Filter subtype: " + pkcs7.getFilterSubtype());
+        integrityMap.put("filterSubtype", pkcs7.getFilterSubtype().toString());
+        
+        X509Certificate cert = (X509Certificate) pkcs7.getSigningCertificate();
+		System.out.println("Name of the signer: " + CertificateInfo.getSubjectFields(cert).getField("CN"));
+		integrityMap.put("nameOfTheSigner", CertificateInfo.getSubjectFields(cert).getField("CN"));
+        
+		if (pkcs7.getSignName() != null){
+			System.out.println("Alternative name of the signer: " + pkcs7.getSignName());
+			integrityMap.put("alternativeNameOfTheSigner", pkcs7.getSignName());			
+		}else{
+			System.out.println("Alternative name of the signer: " + "null");
+			integrityMap.put("alternativeNameOfTheSigner", "");
+		}
+		
+		SimpleDateFormat date_format = new SimpleDateFormat("dd-MM-yyyy HH:mm:ss.SS");
+		System.out.println("Signed on: " + date_format.format(pkcs7.getSignDate().getTime()));
+		integrityMap.put("signedOn", date_format.format(pkcs7.getSignDate().getTime()).toString());
+		
+		if (pkcs7.getTimeStampDate() != null) {
+			System.out.println("TimeStamp: " + date_format.format(pkcs7.getTimeStampDate().getTime()));
+			integrityMap.put("timeStamp", date_format.format(pkcs7.getTimeStampDate().getTime()).toString());
+			TimeStampToken ts = pkcs7.getTimeStampToken();
+			System.out.println("TimeStamp service: " + ts.getTimeStampInfo().getTsa());
+			integrityMap.put("timeStampService", ts.getTimeStampInfo().getTsa().toString());
+			System.out.println("Timestamp verified? " + pkcs7.verifyTimestampImprint());
+			integrityMap.put("timeStampVerified", Boolean.toString(pkcs7.verifyTimestampImprint()));
+		}else{
+			System.out.println("TimeStamp: " + "null");
+			integrityMap.put("timeStamp", "null");
+			
+			System.out.println("TimeStamp service: " + "null");
+			integrityMap.put("timeStampService", "null");
+			
+			System.out.println("Timestamp verified?: " + "null");
+			integrityMap.put("timeStampVerified", "null");
+		}
+		
+		System.out.println("Location: " + pkcs7.getLocation());
+		integrityMap.put("location", pkcs7.getLocation());		
+		
+		System.out.println("Reason: " + pkcs7.getReason());
+		integrityMap.put("reason", pkcs7.getReason());
+		
+		PdfDictionary sigDict = fields.getSignatureDictionary(name);
+		PdfString contact = sigDict.getAsString(PdfName.CONTACTINFO);
+		if (contact != null){
+			System.out.println("Contact info: " + contact);
+			integrityMap.put("contactInfo", contact.toString());			
+		}else{
+			System.out.println("Contact info: " + "null");
+			integrityMap.put("contactInfo", "null");
+		}
+			
+		SignaturePermissions perms = null;
+		perms = new SignaturePermissions(sigDict, perms);
+		System.out.println("Signature type: " + (perms.isCertification() ? "certification" : "approval"));
+		integrityMap.put("signatureType", (perms.isCertification() ? "certification" : "approval"));
+		
+        return integrityMap;
+	}
+	
+	/**
+	 * Construye un objeto JSON a partir del HashMap pasado como argumento
+	 * @param hashMap HashMap que contiene los elementos para construir el JSON
+	 * @return objeto JSON a partir del HashMap pasado como argumento
+	 */
+	public JSONObject getJSONFromASignature(HashMap<String, String> hashMap) {
+		
+		JSONObject jsonSignature = new JSONObject();
+		
+		for (Entry<String, String> entry : hashMap.entrySet()) {
+		    System.out.println("Key = " + entry.getKey() + ", Value = " + entry.getValue());
+		    jsonSignature.put(entry.getKey(), entry.getValue());
+		}		
+		return jsonSignature;		
+	}
+	
+	
 	
 	/**
 	 * Verifica si un archivo posee firmas electronicas y retorna informacion
@@ -540,6 +770,10 @@ public class MurachiRESTWS {
 		CertificateFactory cf;
 		X509Certificate signerCert;
 		
+		// cadena resultado de la funcion
+		String result = "";
+				
+		PresignHash presignHash = new PresignHash();
 		
 		SignedInfo signedInfo;
 		
@@ -550,9 +784,19 @@ public class MurachiRESTWS {
 		System.out.println("certificado en Hex: " + certHex);
 		
 		try {
+			
+			System.setProperty("digidoc4j.mode", "TEST");
+			
+			Configuration configuration;
+			configuration = new Configuration(Configuration.Mode.TEST);
+			configuration.loadConfiguration("/home/aaraujo/desarrollo/2015/workspace-luna/JAXRS-Murachi/WebContent/WEB-INF/lib/digidoc4j.yaml");
+			
+			//configuration.setTslLocation("https://tibisay.cenditel.gob.ve/murachi/raw-attachment/wiki/WikiStart/trusted-test-mp.xml");
+			configuration.setTslLocation("http://localhost/trusted-test-mp.xml");
+			
 			Container container;
 			
-			container = Container.create(Container.DocumentType.BDOC);
+			container = Container.create(Container.DocumentType.BDOC, configuration);
 			container.addDataFile(sourceFile, "text/plain");
 			
 			cf = CertificateFactory.getInstance("X.509");
@@ -563,16 +807,60 @@ public class MurachiRESTWS {
 			
 			signedInfo = container.prepareSigning(signerCert);
 			
-			System.out.println("presignBdoc - hash: " + byteArrayToHexString(signedInfo.getDigest()));
+			String hashToSign = byteArrayToHexString(signedInfo.getDigest());
+			//System.out.println("presignBdoc - hash: " + byteArrayToHexString(signedInfo.getDigest()));
+			System.out.println("presignBdoc - hash: " + hashToSign);
+			
+			
+			//container.save("/tmp/containerTmp.bdoc");
+			serialize(container, "/tmp/containerSerialized");
+			
+			
+			/*
+			Security.addProvider(new BouncyCastleProvider());
+			
+			Configuration configuration = new Configuration(Configuration.Mode.TEST);
+			
+			configuration.loadConfiguration("/home/aaraujo/desarrollo/2015/workspace-luna/JAXRS-Murachi/WebContent/WEB-INF/lib/digidoc4j.yaml");
+			configuration.setTslLocation("http://localhost/trusted-test-mp.xml");
+		    
+			Container container = Container.create(configuration);
+		    SignatureParameters signatureParameters = new SignatureParameters();
+		    SignatureProductionPlace productionPlace = new SignatureProductionPlace();
+		    productionPlace.setCity("Merida");
+		    signatureParameters.setProductionPlace(productionPlace);
+		    signatureParameters.setRoles(asList("Desarrollador"));
+		    container.setSignatureParameters(signatureParameters);
+		    container.setSignatureProfile(SignatureProfile.B_BES);
+		    container.addDataFile("/tmp/215d6ef7-d639-4191-87a1-ef68a91b2b27", "text/plain");
+		    container.sign(new PKCS12Signer("/tmp/JuanHilario.p12", "123456".toCharArray()));
+//		    Container container = Container.open("util/faulty/bdoc21-bad-nonce-content.bdoc");
+		    container.save("/tmp/signed.bdoc");
+		    ValidationResult result = container.validate();
+		    System.out.println(result.getReport());
+			*/
+			
+			
+			// creacion del json
+			JSONObject jsonHash = new JSONObject();
+			jsonHash.put("hashToSign", hashToSign);
+						
+			result = jsonHash.toString();
+						
+			presignHash.setHash(hashToSign);
+			
 			
 			
 		} catch (CertificateException e1) {
 			// TODO Auto-generated catch block
 			e1.printStackTrace();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
 		
 		
-		return null;
+		return presignHash;
 		
 	}
 	
@@ -892,4 +1180,36 @@ public class MurachiRESTWS {
 	      return hexData.toString();
 	  }
 	
+	  /**
+	   * Serializa el contenedor BDOC pasado como argumento
+	   * @param container Contenedor que se desea serializar
+	   * @param filePath ruta absoluta al archivo serializado
+	   * @throws IOException
+	   */
+	  private static void serialize(Container container, String filePath) throws IOException {
+		  FileOutputStream fileOut = new FileOutputStream(filePath+".bin");
+		  ObjectOutputStream out = new ObjectOutputStream(fileOut);
+		  out.writeObject(container);
+		  out.flush();
+		  out.close();
+		  fileOut.close();
+	  }
+	  
+	  /**
+	   * Deserializa el contenedor BDOC pasado como argumento
+	   * @param filePath ruta absoluta al contenedor que se desea deserializar
+	   * @return contenedor deserializado
+	   * @throws IOException
+	   * @throws ClassNotFoundException
+	   */
+	  private static Container deserializer(String filePath) throws IOException, ClassNotFoundException {
+		  //FileInputStream fileIn = new FileInputStream("container.bin");
+		  FileInputStream fileIn = new FileInputStream(filePath);
+		  ObjectInputStream in = new ObjectInputStream(fileIn);
+		  Container container = (Container) in.readObject();
+		  in.close();
+		  fileIn.close();
+		  return container;
+	  }
+	  
 }
