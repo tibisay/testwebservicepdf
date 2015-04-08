@@ -12,12 +12,22 @@ public class PresignHash {
 	
 	private String hash;
 	
+	private String error;
+	
 	public String getHash() {
 		return hash;
 	}
 	
 	public void setHash(String h) {
 		hash = h;
+	}
+
+	public String getError() {
+		return error;
+	}
+
+	public void setError(String error) {
+		this.error = error;
 	}
 	
 
