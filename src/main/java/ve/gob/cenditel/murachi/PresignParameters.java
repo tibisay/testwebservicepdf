@@ -14,6 +14,12 @@ public class PresignParameters {
 	
 	private String certificate;
 	
+	private String reason;
+	
+	private String location;
+	
+	private String contact;
+	
 	public String getFileId() {
 		return fileId;
 	}
@@ -28,5 +34,29 @@ public class PresignParameters {
 	
 	public void setCertificate(String cert) {
 		certificate = cert;
+	}
+
+	public String getReason() {
+		return reason;
+	}
+
+	public void setReason(String reason) {
+		this.reason = reason;
+	}
+
+	public String getLocation() {
+		return location;
+	}
+
+	public void setLocation(String location) {
+		this.location = location;
+	}
+
+	public String getContact() {
+		return contact;
+	}
+
+	public void setContact(String contact) {
+		this.contact = contact;
 	}
 }

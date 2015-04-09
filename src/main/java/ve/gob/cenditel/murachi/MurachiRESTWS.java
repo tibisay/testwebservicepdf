@@ -137,6 +137,7 @@ public class MurachiRESTWS {
 	 * @param fileDetails datos del archivo
 	 * @return
 	 */
+/*	
 	@POST
 	@Path("/")
 	@Consumes(MediaType.MULTIPART_FORM_DATA)
@@ -174,8 +175,53 @@ public class MurachiRESTWS {
 		
 		return Response.status(200).entity(result).build();
 	}
+*/
 	
-	
+	/**
+	 * Carga un archivo pasado a través de un formulario y retorna 
+	 * un json con el id del archivo en el servidor para futuras consultas
+	 * 
+	 * @param uploadedInputStream stream para obtener el archivo
+	 * @param fileDetails datos del archivo
+	 * @return
+	 */
+	@POST
+	@Path("/")
+	@Consumes(MediaType.MULTIPART_FORM_DATA)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response uploadFileAndVerify(
+			@FormDataParam("upload") InputStream uploadedInputStream,
+			@FormDataParam("upload") FormDataContentDisposition fileDetails) {
+		
+		//TODO manejar las excepciones correctamente
+		if (uploadedInputStream == null) {
+			System.out.println("uploadedInputStream == null");
+		}
+		
+		if (fileDetails == null) {
+			System.out.println("fileDetails == null");
+		}
+				
+		String fileId = UUID.randomUUID().toString();
+		System.out.println(fileId);
+		
+		saveToDisk(uploadedInputStream, fileDetails, fileId);
+		
+		try {
+			uploadedInputStream.close();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		System.out.println("File saved to server location : " + SERVER_UPLOAD_LOCATION_FOLDER + fileId);
+		
+		JSONObject jsonObject = new JSONObject();
+					
+		jsonObject = verifyALocalFile(fileId);
+		
+		return Response.status(200).entity(jsonObject.toString()).build();
+	}
 	
 	/**
 	 * Escribe un archivo en el sistema de archivos 
@@ -211,7 +257,7 @@ public class MurachiRESTWS {
 	 * Verifica si un archivo posee firmas electronicas y retorna informacion
 	 * de las mismas en un json
 	 * @param idFile identificador del archivo a verificar
-	 * @return
+	 * @return JSON con informacion de las firmas
 	 */
 	@GET
 	@Path("/{idFile}")
@@ -252,6 +298,49 @@ public class MurachiRESTWS {
 		result = jsonObject.toString();
 		return Response.status(200).entity(result).build();
 	}
+	
+	/**
+	 * Verifica si un archivo local posee firmas electronicas y retorna informacion
+	 * de las mismas en un json.
+	 * 
+	 * @param idFile identificador del archivo a verificar
+	 * @return JSONObject con informacion de las firmas
+	 */
+	public JSONObject verifyALocalFile(String idFile) {
+		
+		System.out.println("verifyALocalFile: " + idFile);
+		
+		String file = SERVER_UPLOAD_LOCATION_FOLDER + idFile;
+		
+		File tmpFile = new File(file);
+		
+		JSONObject jsonObject = new JSONObject();
+		
+		if (!tmpFile.exists()) {
+			System.out.println("File : " + file + " does not exists.");
+			jsonObject.put("fileExist", "false");
+			
+		}else{
+			System.out.println("File : " + file + " exists.");
+			jsonObject.put("fileExist", "true");
+			
+			String mime = getMimeType(file);
+			System.out.println("mimetype : " + mime);
+			
+			if (mime.equals("application/pdf")){
+				System.out.println(" PDF ");
+				
+				jsonObject = verifySignaturesInPdf(file);
+				
+			}else{
+				System.out.println("BDOC");
+				jsonObject.put("formato", "BDOC");
+				jsonObject.put("resultado", "NO IMPLEMENTADO");
+			}			
+		}
+		return jsonObject;
+	}
+	
 	
 	/**
 	 * Retorna un JSON con informacion de las firmas del documento PDF
@@ -409,8 +498,8 @@ public class MurachiRESTWS {
 		}
 		
 		
-		X509Certificate certificateTmp = (X509Certificate) certs[revision-1];
-		System.out.println("=== Certificate " + Integer.toString(revision-1) + " ===");
+		X509Certificate certificateTmp = (X509Certificate) certs[0];
+		System.out.println("=== Certificate " + Integer.toString(revision) + " ===");
 
 		HashMap<String, String> signerCertificateMap = getSignerCertificateInfo(certificateTmp, cal.getTime());
 		for (Entry<String, String> entry : signerCertificateMap.entrySet()) {
@@ -521,7 +610,18 @@ public class MurachiRESTWS {
 	
 	
 	/**
-	 * Ejecuta el proceso de presign o preparacion de firma de documento pdf
+	 * Ejecuta el proceso de presign o preparacion de firma de documento pdf.
+	 * 
+	 * Estructura del JSON que recibe la funcion:
+	 * 
+	 * 	{"fileId":"file_id",				
+	 *	"certificate":"hex_cert_value",
+	 *  "reason":"reason",
+	 *  "location":"location",
+	 *  "contact":"contact"
+	 *  }
+	 * 
+	 * 
 	 * @param presignPar JSON con los parametros de preparacion: Id del archivo y certificado
 	 * firmante
 	 * @param req objeto request para crear una sesion y mantener elementos del 
@@ -538,13 +638,20 @@ public class MurachiRESTWS {
 		String result = null;
 		
 		PresignHash presignHash = new PresignHash();
-				
+
+		// obtener el id del archivo 
+		String fileId = presignPar.getFileId();
+		
 		// cadena con el certificado
 		String certHex = presignPar.getCertificate();
 		System.out.println("certificado en Hex: " + certHex);
+
+		String reason = presignPar.getReason();
 		
-		// obtener el id del archivo 
-		String fileId = presignPar.getFileId();
+		String location = presignPar.getLocation();
+		
+		String contact = presignPar.getContact();
+		
 		
 		String pdf = SERVER_UPLOAD_LOCATION_FOLDER + fileId;
 		System.out.println("archivo a firmar: " + pdf);
@@ -560,7 +667,7 @@ public class MurachiRESTWS {
 			return Response.status(400).entity(presignHash).build();
 			
 		}
-		
+			
 				
 		try {
 			CertificateFactory factory = CertificateFactory.getInstance("X.509");
@@ -577,23 +684,41 @@ public class MurachiRESTWS {
 				System.out.println(chain[0].toString());
 			}			
 			
-			PdfReader reader = new PdfReader(pdf);
+			PdfReader reader = new PdfReader(pdf);			
 			
 			ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			
-			//FileOutputStream baos = new FileOutputStream(pdf+"-signed.pdf");
+			//PdfStamper stamper = PdfStamper.createSignature(reader, baos, '\0');
+			PdfStamper stamper = null;
 			
-			PdfStamper stamper = PdfStamper.createSignature(reader, baos, '\0');
 			
+			if (pdfAlreadySigned(reader)){
+				stamper = PdfStamper.createSignature(reader, baos, '\0', null, true);
+			}else{
+				stamper = PdfStamper.createSignature(reader, baos, '\0');
+			}
+
 			// crear la apariencia de la firma
 	    	PdfSignatureAppearance sap = stamper.getSignatureAppearance();
-	    	sap.setReason("Prueba de firma en dos partes");
-	    	sap.setLocation("Merida, Venezuela");
-	    	sap.setVisibleSignature(new Rectangle(36, 748, 144,780),1, "sig");
+	    		    	
+	    	sap.setReason(reason);
+	    	sap.setLocation(location);
+	    	sap.setContact(contact);
+	    	
+	    	//sap.setVisibleSignature(new Rectangle(36, 748, 144,780),1, "sig");
+	    	
+	    	if (!pdfAlreadySigned(reader)){
+	    		sap.setVisibleSignature(new Rectangle(36, 748, 144, 780),1, "sig");
+			}else{
+				sap.setVisibleSignature(new Rectangle(36, 700, 144, 732),1, "sig2");
+			}
+	    	
 	    	sap.setCertificate(chain[0]);
 	    	
 	    	// crear la estructura de la firma
 	    	PdfSignature dic = new PdfSignature(PdfName.ADOBE_PPKLITE, PdfName.ADBE_PKCS7_DETACHED);
+	    	
+	    	
 	    	dic.setReason(sap.getReason());
 	    	dic.setLocation(sap.getLocation());
 	    	dic.setContact(sap.getContact());
@@ -688,6 +813,26 @@ public class MurachiRESTWS {
 		//return presignHash;
 			
 	}
+	
+	/**
+	 * Retorna verdadero si el archivo pdf pasado como argumento ya esta firmado.
+	 * 
+	 * @param absolutePathToPdf ruta absoluta al archivo pdf
+	 * @return si el archivo pdf pasado como argumento ya esta firmado.
+	 * @throws IOException 
+	 */
+	private Boolean pdfAlreadySigned(PdfReader pdfReader) throws IOException {
+		Security.addProvider(new BouncyCastleProvider());
+		
+		AcroFields af = pdfReader.getAcroFields();
+		ArrayList<String> names = af.getSignatureNames();
+		if (names.size() <= 0) {
+			return false;
+		}else{
+			return true;
+		}
+	}
+	
 	
 	/**
 	 * Ejecuta el proceso de postsign o completacion de firma de documento pdf
