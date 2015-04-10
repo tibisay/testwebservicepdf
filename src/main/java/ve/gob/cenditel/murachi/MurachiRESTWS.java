@@ -7,6 +7,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -67,6 +68,8 @@ import java.text.SimpleDateFormat;
 
 
 
+
+
 import javax.ws.rs.Consumes;
 import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
@@ -78,6 +81,7 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.ResponseBuilder;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.tsp.TimeStampToken;
@@ -862,7 +866,7 @@ public class MurachiRESTWS {
 	@POST
 	@Path("/pdfs/resenas")
 	@Consumes(MediaType.APPLICATION_JSON)
-	@Produces(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)	
 	public Response postsignPdf(PostsignParameters postsignPar, @Context HttpServletRequest req) throws IOException {
 		
 		
@@ -955,11 +959,32 @@ public class MurachiRESTWS {
 		
 			
 		PostsignMessage message = new PostsignMessage();
-		message.setMessage(SERVER_UPLOAD_LOCATION_FOLDER + fileId + "-signed.pdf");
-		//return Response.status(200).entity(result).build();
+		//message.setMessage(SERVER_UPLOAD_LOCATION_FOLDER + fileId + "-signed.pdf");
+		message.setMessage(fileId + "-signed.pdf");
 		return Response.status(200).entity(message).build();
 	}
 	
+	/**
+	 * Descarga el archivo pdf pasado como argumento.
+	 * @param idFile nombre del archivo pdf a descargar
+	 * @return archivo pdf pasado como argumento.
+	 */
+	@GET
+	@Path("/pdfs/{idFile}")
+	public Response getPdfSigned(@PathParam("idFile") String idFile) {
+		File file = null;
+		
+		file = new File(SERVER_UPLOAD_LOCATION_FOLDER + idFile);
+		/*
+		if (!file.exists()){
+			
+		}
+		*/
+			 
+		ResponseBuilder response = Response.ok((Object) file);
+		response.header("Content-Disposition", "attachment; filename=" + file.getName());
+		return response.build();
+	}
 	
 	
 	/**
