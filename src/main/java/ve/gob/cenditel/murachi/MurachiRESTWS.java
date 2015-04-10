@@ -708,9 +708,13 @@ public class MurachiRESTWS {
 	    	//sap.setVisibleSignature(new Rectangle(36, 748, 144,780),1, "sig");
 	    	
 	    	if (!pdfAlreadySigned(reader)){
-	    		sap.setVisibleSignature(new Rectangle(36, 748, 144, 780),1, "sig");
+	    		sap.setVisibleSignature(new Rectangle(36, 748, 144, 780),1, "sig1");
 			}else{
-				sap.setVisibleSignature(new Rectangle(36, 700, 144, 732),1, "sig2");
+				int idSig = numberOfSignatures(reader)+1;
+				//sap.setVisibleSignature(new Rectangle(36, 700, 144, 732),1, "sig"+Integer.toString(idSig));
+				sap.setVisibleSignature(
+						new Rectangle(36, (748-(numberOfSignatures(reader)*38)), 144, (780-(numberOfSignatures(reader)*38))),
+							1, "sig"+Integer.toString(idSig));
 			}
 	    	
 	    	sap.setCertificate(chain[0]);
@@ -817,7 +821,7 @@ public class MurachiRESTWS {
 	/**
 	 * Retorna verdadero si el archivo pdf pasado como argumento ya esta firmado.
 	 * 
-	 * @param absolutePathToPdf ruta absoluta al archivo pdf
+	 * @param pdfReader objeto PdfReader asociado al documento pdf
 	 * @return si el archivo pdf pasado como argumento ya esta firmado.
 	 * @throws IOException 
 	 */
@@ -831,6 +835,19 @@ public class MurachiRESTWS {
 		}else{
 			return true;
 		}
+	}
+	
+	/**
+	 * Retorna el número de firmas del documento 
+	 * @param pdfReader objeto PdfReader asociado al documento pdf 
+	 * @return número de firmas del documento
+	 */
+	private int numberOfSignatures(PdfReader pdfReader) {
+		Security.addProvider(new BouncyCastleProvider());
+		
+		AcroFields af = pdfReader.getAcroFields();
+		ArrayList<String> names = af.getSignatureNames();
+		return names.size();		
 	}
 	
 	
