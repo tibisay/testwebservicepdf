@@ -70,6 +70,17 @@ import java.text.SimpleDateFormat;
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 import javax.ws.rs.Consumes;
 import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
@@ -111,17 +122,29 @@ import com.itextpdf.text.pdf.security.MakeSignature.CryptoStandard;
 import com.itextpdf.text.pdf.security.SignaturePermissions;
 import com.itextpdf.text.pdf.security.VerificationException;
 
+import ee.sk.digidoc.CertValue;
+import ee.sk.digidoc.DigiDocException;
+import ee.sk.digidoc.SignedDoc;
+import ee.sk.digidoc.factory.DigiDocGenFactory;
+
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
 import org.digidoc4j.Configuration;
 import org.digidoc4j.Container;
+import org.digidoc4j.Container.DocumentType;
+import org.digidoc4j.Signature;
 import org.digidoc4j.SignatureParameters;
 import org.digidoc4j.SignatureProductionPlace;
 import org.digidoc4j.SignedInfo;
 import org.digidoc4j.ValidationResult;
 import org.digidoc4j.Container.SignatureProfile;
+import org.digidoc4j.exceptions.DigiDoc4JException;
+import org.digidoc4j.exceptions.SignatureNotFoundException;
+import org.digidoc4j.impl.DDocContainer;
+import org.digidoc4j.impl.DDocSignature;
+import org.digidoc4j.impl.ValidationResultForDDoc;
 import org.digidoc4j.signers.PKCS12Signer;
 
 
@@ -131,7 +154,20 @@ public class MurachiRESTWS {
 
 	private static final String SERVER_UPLOAD_LOCATION_FOLDER = "/tmp/"; 
 	
+	public static final String ACRAIZ = "/tmp/CERTIFICADO-RAIZ-SHA384.crt";
+	public static final String PSCFII = "/tmp/PSCFII-SHA256.crt";	
 	public static final String GIDSI = "/tmp/gidsi.crt";
+	
+	
+	private static final String ANSI_RED = "^[[31m";
+	private static final String ANSI_RESET = "^[[0m";
+	
+	// para reportes de advertencias de BDOC
+	private static boolean bdocWarnings = true;
+	
+	// para reportes en modo verbose de BDOC
+	private static boolean bdocVerboseMode = true;
+
         	
 	/**
 	 * Carga un archivo pasado a través de un formulario y retorna 
@@ -295,8 +331,10 @@ public class MurachiRESTWS {
 				
 			}else{
 				System.out.println("BDOC");
-				jsonObject.put("formato", "BDOC");
-				jsonObject.put("resultado", "NO IMPLEMENTADO");
+				//jsonObject.put("formato", "BDOC");
+				//jsonObject.put("resultado", "NO IMPLEMENTADO");
+				
+				jsonObject = verifySignaturesInBdoc(file);
 			}			
 		}
 		result = jsonObject.toString();
@@ -336,11 +374,18 @@ public class MurachiRESTWS {
 				
 				jsonObject = verifySignaturesInPdf(file);
 				
+			//}else if (mime.equals("application/vnd.etsi.asic-e+zip")){
+			}else if (mime.equals("application/zip") ){
+				System.out.println("BDOC");				
+				//jsonObject.put("formato", "BDOC");
+				//jsonObject.put("resultado", "NO IMPLEMENTADO");
+				
+				jsonObject = verifySignaturesInBdoc(file);
 			}else{
-				System.out.println("BDOC");
-				jsonObject.put("formato", "BDOC");
-				jsonObject.put("resultado", "NO IMPLEMENTADO");
-			}			
+				System.out.println("extension no reconocida");
+				jsonObject.put("fileExist", "true");
+				jsonObject.put("error", "extension not supported");				
+			}
 		}
 		return jsonObject;
 	}
@@ -348,7 +393,7 @@ public class MurachiRESTWS {
 	
 	/**
 	 * Retorna un JSON con informacion de las firmas del documento PDF
-	 * @param tmpFile archivo pdf a verificar
+	 * @param pdfFile archivo pdf a verificar
 	 * @return JSON con informacion de las firmas del documento PDF
 	 */
 	private JSONObject verifySignaturesInPdf(String pdfFile) {
@@ -542,7 +587,10 @@ public class MurachiRESTWS {
 			
 			ks.load(null, null);
 			CertificateFactory cf = CertificateFactory.getInstance("X.509");
+			ks.setCertificateEntry("acraiz",cf.generateCertificate(new FileInputStream(ACRAIZ)));
+			ks.setCertificateEntry("pscfii",cf.generateCertificate(new FileInputStream(PSCFII)));
 			ks.setCertificateEntry("gidsi",cf.generateCertificate(new FileInputStream(GIDSI)));
+			
 			
 		} catch (KeyStoreException e) {
 			// TODO Auto-generated catch block
@@ -987,6 +1035,109 @@ public class MurachiRESTWS {
 	}
 	
 	
+	// ******* BDOC ***********************************************************
+	
+	/**
+	 * Retorna un JSON con informacion de las firmas del documento BDOC
+	 * @param bdocFile archivo pdf a verificar
+	 * @return JSON con informacion de las firmas del documento BDOC
+	 */
+	private JSONObject verifySignaturesInBdoc(String bdocFile) {
+	
+		JSONObject jsonSignatures = new JSONObject();
+		
+		Security.addProvider(new BouncyCastleProvider());
+		Container container;
+		container = Container.open(bdocFile);
+		
+		verifyBdocContainer(container);
+		
+		jsonSignatures.put("validation", "executed");				
+		return jsonSignatures;
+	}
+	
+	
+	private static void verifyBdocContainer(Container container) {
+	    ValidationResult validationResult = container.validate();
+
+	    List<DigiDoc4JException> exceptions = validationResult.getContainerErrors();
+	    boolean isDDoc = container.getDocumentType() == DocumentType.DDOC;
+	    for (DigiDoc4JException exception : exceptions) {
+	      if (isDDoc && isWarning(((DDocContainer) container).getFormat(), exception))
+	        System.out.println("    Warning: " + exception.toString());
+	      else
+	        System.out.println((isDDoc ? "  " : "   Error: ") + exception.toString());
+	    }
+
+	    if (isDDoc && (((ValidationResultForDDoc) validationResult).hasFatalErrors())) {
+	      return;
+	    }
+
+	    List<Signature> signatures = container.getSignatures();
+	    if (signatures == null) {
+	      throw new SignatureNotFoundException();
+	    }
+
+	    for (Signature signature : signatures) {
+	      List<DigiDoc4JException> signatureValidationResult = signature.validate();
+	      if (signatureValidationResult.size() == 0) {
+	        System.out.println("Signature " + signature.getId() + " is valid");
+	      } else {
+	        System.out.println(ANSI_RED + "Signature " + signature.getId() + " is not valid" + ANSI_RESET);
+	        for (DigiDoc4JException exception : signatureValidationResult) {
+	          System.out.println((isDDoc ? "        " : "   Error: ")
+	              + exception.toString());
+	        }
+	      }
+	      if (isDDoc && isDDocTestSignature(signature)) {
+	        System.out.println("Signature " + signature.getId() + " is a test signature");
+	      }
+	    }
+
+	    showWarnings(validationResult);
+	    verboseMessage(validationResult.getReport());
+	 }
+
+	 private static void showWarnings(ValidationResult validationResult) {
+		 if (bdocWarnings) {
+			 for (DigiDoc4JException warning : validationResult.getWarnings()) {
+				 System.out.println("Warning: " + warning.toString());
+		     }
+		 }
+	 }
+	 
+	 /**
+	   * Checks is DigiDoc4JException predefined as warning for DDOC
+	   *
+	   * @param documentFormat format SignedDoc
+	   * @param exception      error to check
+	   * @return is this exception warning for DDOC utility program
+	   * @see SignedDoc
+	   */
+	  public static boolean isWarning(String documentFormat, DigiDoc4JException exception) {
+	    int errorCode = exception.getErrorCode();
+	    return (errorCode == DigiDocException.ERR_DF_INV_HASH_GOOD_ALT_HASH
+	        || errorCode == DigiDocException.ERR_OLD_VER
+	        || errorCode == DigiDocException.ERR_TEST_SIGNATURE
+	        || errorCode == DigiDocException.WARN_WEAK_DIGEST
+	        || (errorCode == DigiDocException.ERR_ISSUER_XMLNS && !documentFormat.equals(SignedDoc.FORMAT_SK_XML)));
+	  }
+
+	  private static boolean isDDocTestSignature(Signature signature) {
+		  CertValue certValue = ((DDocSignature) signature).getCertValueOfType(CertValue.CERTVAL_TYPE_SIGNER);
+		  if (certValue != null) {
+			  if (DigiDocGenFactory.isTestCard(certValue.getCert())) return true;
+		  }
+		  return false;
+	  }
+	 
+	  private static void verboseMessage(String message) {
+		    if (bdocVerboseMode)
+		      System.out.println(message);
+	  }
+
+	
+	
 	/**
 	 * Verifica si un archivo posee firmas electronicas y retorna informacion
 	 * de las mismas en un json
@@ -1411,7 +1562,7 @@ public class MurachiRESTWS {
 			
 			Configuration configuration;
 			configuration = new Configuration(Configuration.Mode.TEST);
-			configuration.loadConfiguration("/home/aaraujo/desarrollo/2015/workspace-luna/JAXRS-Murachi/WebContent/WEB-INF/lib/digidoc4j.yaml");
+			//configuration.loadConfiguration("/home/aaraujo/desarrollo/2015/workspace-luna/JAXRS-Murachi/WebContent/WEB-INF/lib/digidoc4j.yaml");
 			
 			//configuration.setTslLocation("https://tibisay.cenditel.gob.ve/murachi/raw-attachment/wiki/WikiStart/trusted-test-mp.xml");
 			configuration.setTslLocation("http://localhost/trusted-test-mp.xml");
@@ -1453,7 +1604,7 @@ public class MurachiRESTWS {
 			serialize(container, "/tmp/containerSerialized");
 			*/
 			
-			String hashToSign = "hola";
+			String hashToSign = "firma exitosa";
 			
 			// creacion del json
 			JSONObject jsonHash = new JSONObject();
