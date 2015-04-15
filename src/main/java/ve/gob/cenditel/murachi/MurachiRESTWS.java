@@ -81,6 +81,10 @@ import java.text.SimpleDateFormat;
 
 
 
+
+
+
+
 import javax.ws.rs.Consumes;
 import javax.ws.rs.FormParam;
 import javax.ws.rs.GET;
@@ -134,12 +138,14 @@ import javax.servlet.http.HttpSession;
 import org.digidoc4j.Configuration;
 import org.digidoc4j.Container;
 import org.digidoc4j.Container.DocumentType;
+import org.digidoc4j.DataFile;
 import org.digidoc4j.Signature;
 import org.digidoc4j.SignatureParameters;
 import org.digidoc4j.SignatureProductionPlace;
 import org.digidoc4j.SignedInfo;
 import org.digidoc4j.ValidationResult;
 import org.digidoc4j.Container.SignatureProfile;
+import org.digidoc4j.X509Cert;
 import org.digidoc4j.exceptions.DigiDoc4JException;
 import org.digidoc4j.exceptions.SignatureNotFoundException;
 import org.digidoc4j.impl.DDocContainer;
@@ -272,6 +278,7 @@ public class MurachiRESTWS {
 	private void saveToDisk(InputStream uploadedInputStream, FormDataContentDisposition fileDetails, String fileId) {
 		
 		String uploadedFileLocation = SERVER_UPLOAD_LOCATION_FOLDER + /*fileDetails.getFileName()*/ fileId;
+		
 		System.out.println("uploadedFileLocation: " + uploadedFileLocation);
 		
 		try {
@@ -1039,21 +1046,195 @@ public class MurachiRESTWS {
 	
 	/**
 	 * Retorna un JSON con informacion de las firmas del documento BDOC
-	 * @param bdocFile archivo pdf a verificar
+	 * @param bdocFile archivo BDOC a verificar
 	 * @return JSON con informacion de las firmas del documento BDOC
 	 */
 	private JSONObject verifySignaturesInBdoc(String bdocFile) {
 	
 		JSONObject jsonSignatures = new JSONObject();
+
+		JSONArray jsonSignaturesArray = new JSONArray();
+		JSONArray jsonContainerValidationExceptionArray = new JSONArray();
 		
 		Security.addProvider(new BouncyCastleProvider());
 		Container container;
 		container = Container.open(bdocFile);
 		
-		verifyBdocContainer(container);
-		
+		int numberOfSignatures = container.getSignatures().size();
+		if (numberOfSignatures == 0){
+			jsonSignatures.put("signatureNumber", "0");
+		}else{
+			jsonSignatures.put("fileExist", "true");
+			
+			// informacion de archivos dentro del contenedor
+			if (container.getDataFiles().size() > 0){
+				jsonSignatures.put("numberOfDataFiles", container.getDataFiles().size()); 
+				jsonSignatures.put("dataFiles", getJSONFromBDOCDataFiles(container.getDataFiles()));
+				System.out.println(" dataFiles:  " + getJSONFromBDOCDataFiles(container.getDataFiles()).toString());
+			}else{
+				System.out.println(" dataFiles:  == 0");
+			}
+
+			
+			jsonSignatures.put("numberOfSignatures", numberOfSignatures);
+			
+			ValidationResult validationResult = container.validate();
+			List<DigiDoc4JException> exceptions = validationResult.getContainerErrors();
+			
+			boolean isDDoc = container.getDocumentType() == DocumentType.DDOC;
+			
+			if (exceptions.size() > 0){
+				jsonSignatures.put("containerValidation", false);
+				
+				for (DigiDoc4JException exception : exceptions) {
+					JSONObject containerException = new JSONObject();
+					
+					if (isDDoc && isWarning(((DDocContainer) container).getFormat(), exception)){
+						System.out.println("    Warning: " + exception.toString());
+						
+				    }
+				    else{
+				    	System.out.println((isDDoc ? "  " : "   Error_: ") + exception.toString());
+				    	
+				    }
+					containerException.put("containerValidationException", exception.toString());
+				    jsonContainerValidationExceptionArray.put(containerException);
+				}
+			    if (isDDoc && (((ValidationResultForDDoc) validationResult).hasFatalErrors())) {
+			    	jsonSignatures.put("validationResultForDDocHasFatalErrors", true);
+			    	return jsonSignatures; 
+			    }
+			    jsonSignatures.put("containerValidationExceptions", jsonContainerValidationExceptionArray);
+				
+				
+			}else{
+				jsonSignatures.put("containerValidation", true);
+				
+				HashMap<String, String> signatureInformation;
+				for (int i=0; i< numberOfSignatures; i++) {
+					System.out.println("===== firma " + i + " =====");
+					signatureInformation = verifyBDOCSignature(container.getSignature(i), container.getDocumentType());
+					System.out.println("signatureInformation.size " + signatureInformation.size());
+					
+					JSONObject jo = getJSONFromASignature(signatureInformation);
+					//System.out.println("jo:  " + jo.toString());
+					jsonSignaturesArray.put(jo);					
+				}
+								
+				jsonSignatures.put("signatures", jsonSignaturesArray);
+								
+				System.out.println(jsonSignatures.toString());				
+			}
+						
+			
+		}
+		//verifyBdocContainer(container);		
 		jsonSignatures.put("validation", "executed");				
 		return jsonSignatures;
+	}
+	
+	/**
+	 * Retorna un JSON con informacion de los DataFiles incluidos en el contenedor
+	 * @param dataFilesList lista de DataFile incluidos en el contenedor
+	 * @return JSON con informacion de los DataFiles incluidos en el contenedor
+	 */
+	private JSONArray getJSONFromBDOCDataFiles(List<DataFile> dataFilesList) {
+		JSONArray jsonDataFileArray = new JSONArray();
+		
+		for (int i = 0; i < dataFilesList.size(); i++){
+			
+			JSONObject tmpJsonDataFile = new JSONObject();
+			DataFile df = dataFilesList.get(i);
+			tmpJsonDataFile.put("dataFileSize", Long.toString(df.getFileSize()));
+			tmpJsonDataFile.put("filename", df.getId());
+			tmpJsonDataFile.put("mediaType", df.getMediaType());
+			tmpJsonDataFile.put("name", df.getName());
+			jsonDataFileArray.put(tmpJsonDataFile);
+		}
+		
+		//JSONObject jsonDataFile = new JSONObject();
+		//jsonDataFile.put("dataFiles", jsonDataFileArray);
+		
+		//return jsonDataFile;
+		return jsonDataFileArray;
+	}
+
+	/**
+	 * Retorna Hashmap con la informacion de una firma electronica que se verifica
+	 * @param signature firma para verificar
+	 * @param documentType tipo de documento 
+	 * @return Hashmap con la informacion de una firma electronica que se verifica
+	 */
+	private static HashMap<String, String> verifyBDOCSignature(Signature signature, DocumentType documentType) {
+		
+		HashMap<String, String> signatureMap = new HashMap<String, String>();
+		
+		boolean isDDoc = documentType == DocumentType.DDOC;
+		
+		List<DigiDoc4JException> signatureValidationResult = signature.validate();
+		
+		if (signatureValidationResult.size() > 0) {
+			System.out.println(ANSI_RED + "Signature " + signature.getId() + " is not valid" + ANSI_RESET);
+	        signatureMap.put("isValid", Boolean.toString(false));
+	        int counter = 1;
+	        
+	        //JSONArray jsonValidationExceptionArray = new JSONArray();
+	        //JSONObject tmpValidationException = new JSONObject();
+	        
+	        for (DigiDoc4JException exception : signatureValidationResult) {
+	          System.out.println((isDDoc ? "        " : "   Error: ") + exception.toString());
+	          signatureMap.put("signature"+signature.getId()+"ValidationException"+counter, exception.toString());
+	          
+	          //tmpValidationException.put("ValidationException", exception.toString());	          
+	          //jsonValidationExceptionArray.put(tmpValidationException);
+	        }
+	        //signatureMap.put("validationException", jsonValidationExceptionArray);
+	      
+	      if (isDDoc && isDDocTestSignature(signature)) {
+	        System.out.println("Signature " + signature.getId() + " is a test signature");
+	        signatureMap.put("isDDocTestSignature", Boolean.toString(true));
+	      }
+		}
+		else{
+			
+			System.out.println("Signature " + signature.getId() + " is valid");
+	    	signatureMap.put("isValid", Boolean.toString(true));
+		}
+		signatureMap.put("signatureId", signature.getId());
+    	signatureMap.put("signatureProfile", signature.getProfile().toString());
+    	signatureMap.put("signatureMethod", signature.getSignatureMethod());
+    	/*
+    	if (signature.getSignerRoles().size() > 0){	    	
+    		signatureMap.put("signerRole1", signature.getSignerRoles().get(0));
+    		if (signature.getSignerRoles().size() == 2){
+    			signatureMap.put("signerRole2", signature.getSignerRoles().get(1));
+    		}
+    	}
+    	*/
+    	signatureMap.put("signatureCity", signature.getCity());
+    	signatureMap.put("signatureState", signature.getStateOrProvince());
+    	signatureMap.put("signaturePostalCode", signature.getPostalCode());
+    	signatureMap.put("signatureCountry", signature.getCountryName());
+    	signatureMap.put("signatureSigningTime", signature.getSigningTime().toString());
+    	//signatureMap.put("signaturePolicy", signature.getPolicy());
+    	//signatureMap.put("signatureOCSPProducedAtTimestamp", signature.getProducedAt().toString());
+    	//signatureMap.put("signaturePolicyURI", signature.getSignaturePolicyURI().toString());
+    	//signatureMap.put("signatureTimestampGenerationTime", signature.getTimeStampCreationTime().toString());
+		
+    	
+    	X509Cert signerCertificate = signature.getSigningCertificate();
+    	signatureMap.put("signerCertificateSerial", signerCertificate.getSerial());
+    	signatureMap.put("signerCertificateSubjectName", signerCertificate.getSubjectName());
+    	signatureMap.put("signerCertificateIssuer", signerCertificate.issuerName());
+    	if (signerCertificate.isValid()){
+    		signatureMap.put("signerCertificateIsValid", Boolean.toString(true));
+    	}else{
+    		signatureMap.put("signerCertificateIsValid", Boolean.toString(false));
+    	}
+    	
+    	
+    	
+		return signatureMap;
 	}
 	
 	
@@ -1066,7 +1247,7 @@ public class MurachiRESTWS {
 	      if (isDDoc && isWarning(((DDocContainer) container).getFormat(), exception))
 	        System.out.println("    Warning: " + exception.toString());
 	      else
-	        System.out.println((isDDoc ? "  " : "   Error: ") + exception.toString());
+	        System.out.println((isDDoc ? "  " : "   Error_: ") + exception.toString());
 	    }
 
 	    if (isDDoc && (((ValidationResultForDDoc) validationResult).hasFatalErrors())) {
